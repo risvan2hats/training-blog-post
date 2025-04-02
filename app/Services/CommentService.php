@@ -2,56 +2,58 @@
 
 namespace App\Services;
 
+use App\Models\Comment;
 use Illuminate\Support\Facades\Auth;
-use App\Repositories\CommentRepository;
+use Illuminate\Support\Facades\DB;
 
-/**
- * Service class for handling comment-related operations.
- * 
- * This class provides methods for managing comments including creation,
- * retrieval, and deletion while handling business logic.
- */
-class CommentService
+class CommentService extends BaseService
 {
-    /**
-     * Create a new CommentService instance.
-     *
-     * @param CommentRepository $repository The comment repository instance
-     */
-    public function __construct(protected CommentRepository $repository) {}
-
-    /**
-     * Get all comments for a specific post.
-     *
-     * @param int $postId The post ID
-     * @return \Illuminate\Database\Eloquent\Collection
-     */
-    public function getCommentsByPost(int $postId)
+    public function __construct(Comment $model)
     {
-        return $this->repository->getCommentsByPostId($postId);
+        $this->model = $model;
     }
 
     /**
-     * Create a new comment.
-     *
-     * @param array $data Comment data including content and post_id
-     * @return \Illuminate\Database\Eloquent\Model The created comment
+     * Get all comments for a specific post with pagination
      */
-    public function createComment(array $data)
+    public function getCommentsByPost(int $postId, int $perPage = 15): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        $data['created_by'] = Auth::id();
-        return $this->repository->create($data);
+        return $this->paginateWhere(['post_id' => $postId],$perPage,['createdBy'],'created_at','desc');
     }
 
     /**
-     * Delete a comment.
-     *
-     * @param int $id The comment ID
-     * @return bool|null
-     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException
+     * Create a new comment with authenticated user as creator
      */
-    public function deleteComment(int $id)
+    public function createComment(array $data): Comment
     {
-        return $this->repository->where('created_by',Auth::id())->where('id',$id)->delete();
+        DB::beginTransaction();
+
+        try {
+            $data['created_by'] = Auth::id();
+            $comment = $this->create($data);
+            DB::commit();
+            return $comment;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Delete a comment only if created by the authenticated user
+     */
+    public function deleteComment(int $id): bool
+    {
+        DB::beginTransaction();
+
+        try {
+            $result = $this->model->where('created_by', Auth::id())->where('id', $id)->delete();
+            
+            DB::commit();
+            return $result;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
     }
 }

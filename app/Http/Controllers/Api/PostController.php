@@ -46,9 +46,9 @@ class PostController extends Controller
     public function index(): JsonResponse
     {
         try {
-            $posts = $this->service->getAllPosts(request()->all());
+            $posts = $this->service->getAll();
             return ResponseHelper::success(new PostCollection($posts));
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             return ResponseHelper::error(trans('messages.post.retrieve_error'),500,[$e->getMessage()]);
         }
     }
@@ -86,7 +86,7 @@ class PostController extends Controller
     public function show(int $id): JsonResponse
     {
         try {
-            $post = $this->service->getPostById($id);
+            $post = $this->service->find($id);
             return ResponseHelper::success(new PostResource($post));
         } catch (Exception $e) {
             return ResponseHelper::error(trans('messages.post.retrieve_error'),500,[$e->getMessage()]);
@@ -148,11 +148,9 @@ class PostController extends Controller
     {
         try {
             $success = $this->service->removeImage($id);
-            return $success
-                ? ResponseHelper::success(null,trans('messages.post.image_removed'))
-                : ResponseHelper::error(trans('messages.post.no_image_exists'),404);
+            return $success ? ResponseHelper::success(null, trans('messages.post.image_removed')) : ResponseHelper::error(trans('messages.post.no_image_exists'), 404);
         } catch (Exception $e) {
-            return ResponseHelper::error(trans('messages.post.image_remove_error'),500,[$e->getMessage()]);
+            return ResponseHelper::error(trans('messages.post.image_remove_error'), 500, [$e->getMessage()]);
         }
     }
 }

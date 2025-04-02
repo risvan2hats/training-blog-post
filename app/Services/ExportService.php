@@ -2,8 +2,8 @@
 
 namespace App\Services;
 
-use App\Exports\PostsExport;
 use Carbon\Carbon;
+use App\Exports\PostsExport;
 use Maatwebsite\Excel\Facades\Excel;
 
 class ExportService

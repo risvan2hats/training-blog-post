@@ -2,161 +2,155 @@
 
 namespace App\Services;
 
-use App\Repositories\PostRepository;
+use App\Models\Post;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
-/**
- * Service class for handling post-related operations.
- * 
- * This class provides methods for managing posts including CRUD operations,
- * image handling, and tag management.
- */
-class PostService extends FilterService
+class PostService extends BaseService
 {
-    /**
-     * Create a new PostService instance.
-     *
-     * @param PostRepository $repository The post repository instance
-     */
-    public function __construct(protected PostRepository $repository) {}
+    use FilterService;
 
-    /**
-     * Get all posts with optional filtering parameters.
-     *
-     * @param array $params Optional filtering parameters
-     * @return \Illuminate\Database\Eloquent\Collection
-     */
-    public function getAllPosts(array $params = [])
+    protected $model;
+    public $params = [];
+
+    protected array $searchColumns  = ['title', 'content'];
+    protected array $filterMap      = [
+        'title'         => ['type'  => 'string',    'condition' => 'like'],
+        'content'       => ['type'  => 'string',    'condition' => 'like'],
+        'status'        => ['type'  => 'string',    'condition' => '='  ],
+        'author_ids'    => ['type'  => 'int',       'condition' => 'in', 'key'   => 'author_id'],
+        'tag_ids'       => ['type'  => 'int',       'condition' => 'in', 'key'   => 'tags.id', 'whereHas' => 'tags'],
+        'date_from'     => ['type'  => 'date',      'condition' => '>=', 'key'   => 'published_at'],
+        'date_to'       => ['type'  => 'date',      'condition' => '<=', 'key'   => 'published_at'],
+    ];
+
+    public function __construct(Post $model)
     {
-        $inputData = $this->getInputData($params);
-        $posts = $this->repository->getPostsNew();
-        $posts = $this->filter($posts, $inputData);
-
-        // return $this->repository->getPostsNew();
-    }
-
-    public function getInputData($params)
-    {
-        $inputData['title'] = $params['title'] ?? null;
-        $inputData['author_id'] = $params['author_id'] ?? null;
-        $inputData['content'] = $params['content'] ?? null;
-
-        return $inputData;
-    }
-
-    public function filter($posts, $inputData)
-    {
-       $posts= $this->repository->filterWithdirectfields($posts,'author_id',$inputData['author_id']);
-
-        return $inputData;
+        $this->model = $model;
     }
 
     /**
-     * Get a post by ID with its relationships.
-     *
-     * @param int|string $id The post ID
-     * @return \Illuminate\Database\Eloquent\Model|null
+     * Get filtered posts with pagination
      */
-    public function getPostById($id)
+    public function getAll()
     {
-        return $this->repository->with(['author', 'tags', 'comments'])->find($id);
+        $this->params['with'] = ['author', 'comments', 'tags'];
+        return $this->getAllFiltered();
     }
 
     /**
-     * Create a new post.
-     *
-     * @param array $data Post data including optional image and tags
-     * @return \Illuminate\Database\Eloquent\Model The created post
+     * Create post with image and tags handling
      */
-    public function createPost(array $data)
+    public function createPost(array $data): Post
     {
-        $post = $this->repository->create($data);
-        
-        if (isset($data['image'])) {
-            $this->handleImageUpload($post, $data['image']);
+        DB::beginTransaction();
+
+        try {
+            $post = $this->create($data);
+            
+            if (isset($data['image'])) {
+                $this->handleImageUpload($post, $data['image']);
+            }
+            
+            if (isset($data['tags'])) {
+                $post->tags()->sync($data['tags']);
+            }
+            
+            DB::commit();
+            return $post;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
         }
-        
-        if (isset($data['tags'])) {
-            $post->tags()->sync($data['tags']);
-        }
-        
-        return $post;
     }
 
     /**
-     * Update an existing post.
-     *
-     * @param int|string $id The post ID
-     * @param array $data Updated post data including optional image and tags
-     * @return \Illuminate\Database\Eloquent\Model The updated post
+     * Update post with image and tags handling
      */
-    public function updatePost($id, array $data)
+    public function updatePost($id, array $data): Post
     {
-        $post = $this->repository->find($id);
-        
-        // Update the post first
-        $this->repository->update($data, $id);
-        
-        // Handle image upload if provided
-        if (isset($data['image'])) {
-            $this->handleImageUpload($post, $data['image'], true);
+        DB::beginTransaction();
+
+        try {
+            $post = $this->update($id, $data);
+            
+            if (isset($data['image'])) {
+                $this->handleImageUpload($post, $data['image'], true);
+            }
+            
+            if (isset($data['tags'])) {
+                $post->tags()->sync($data['tags']);
+            }
+            
+            DB::commit();
+            return $post;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
         }
-        
-        // Sync tags if provided
-        if (isset($data['tags'])) {
-            $post->tags()->sync($data['tags']);
-        }
-        
-        // Return the fresh instance of the post
-        return $post->fresh();
     }
 
     /**
-     * Delete a post and its associated image.
-     *
-     * @param int|string $id The post ID
-     * @return bool|null
+     * Delete post with image cleanup
      */
-    public function deletePost($id)
+    public function deletePost($id): bool
     {
-        $post = $this->repository->find($id);
-        if ($post->image) {
-            Storage::disk('public')->delete($post->image);
+        DB::beginTransaction();
+
+        try {
+            $post = $this->find($id);
+            
+            if ($post->image) {
+                Storage::disk('public')->delete($post->image);
+            }
+            
+            $result = $this->delete($id);
+            DB::commit();
+            return $result;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
         }
-        
-        return $post->delete();
     }
 
     /**
-     * Remove the image associated with a post.
-     *
-     * @param int|string $id The post ID
-     * @return bool True if image was removed successfully
+     * Handle image upload for posts
      */
-    public function removeImage($id)
-    {
-        $post = $this->repository->find($id);
-        if ($post->image) {
-            Storage::disk('public')->delete($post->image);
-            $post->update(['image' => null]);
-        }
-        return true;
-    }
-
-    /**
-     * Handle the post image upload process.
-     *
-     * @param \Illuminate\Database\Eloquent\Model $post The post model
-     * @param \Illuminate\Http\UploadedFile $image The uploaded image file
-     * @param bool $isUpdate Whether this is an update operation
-     * @return void
-     */
-    protected function handleImageUpload($post, $image, $isUpdate = false)
+    protected function handleImageUpload($post, $image, $isUpdate = false): void
     {
         if ($isUpdate && $post->image) {
             Storage::disk('public')->delete($post->image);
         }
         $path = $image->store('posts', 'public');
         $post->update(['image' => $path]);
+    }
+
+    /**
+     * Remove post image
+     */
+    public function removeImage($id): bool
+    {
+        DB::beginTransaction();
+
+        try {
+            $post = $this->find($id);
+            
+            if ($post->image) {
+                Storage::disk('public')->delete($post->image);
+                $post->update(['image' => null]);
+            }
+            
+            DB::commit();
+            return true;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+    }
+
+    public function getPostsForExport(array $filters = [])
+    {
+        $this->params['with'] = ['author', 'comments', 'tags'];
+        return $this->getAllFiltered(false);
     }
 }

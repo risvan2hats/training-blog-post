@@ -28,24 +28,17 @@ class PostRepository extends BaseRepository
      * 
      * Structure:
      * [
-     *     'filter_key' => [
-     *         'field' => 'database_column',
-     *         'operator' => 'comparison_operator',
-     *         'relation' => 'relationship_name' // optional for relationship filters
-     *     ]
      * ]
      * 
      * @var array
      */
     protected array $filterMap = [
-        'search'        => ['operator' => 'search', 'fields' => ['title', 'content']],
-        'status'        => 'status',
-        'author_id'     => 'author_id',
-        'author_ids'    => ['field' => 'author_id', 'operator' => 'in'],
-        'tag_id'        => ['field' => 'tags.id', 'operator' => 'in', 'relation' => 'tags'],
-        'tag_ids'       => ['field' => 'tags.id', 'operator' => 'in', 'relation' => 'tags'],
-        'date_from'     => ['field' => 'published_at', 'operator' => '>='],
-        'date_to'       => ['field' => 'published_at', 'operator' => '<='],
+        'title'     => 'ilike',
+        'content'   => 'ilike',
+        'status'    => '=',
+        'author_id' => 'in',
+        'date_from' => '>=',
+        'date_to'   => '<=',
     ];
 
     /**
@@ -74,8 +67,10 @@ class PostRepository extends BaseRepository
      * @param array $filters Associative array of filter parameters
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    protected function buildQuery(array $filters = []): \Illuminate\Database\Eloquent\Builder
+    // protected function buildQuery(array $filters = []): \Illuminate\Database\Eloquent\Builder
+    protected function buildQuery(array $filters = [])
     {
+        dd("sdfs");
         // Initialize new query builder instance
         $query = $this->model->newQuery()
             // Eager load relationships

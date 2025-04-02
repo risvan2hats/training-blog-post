@@ -2,97 +2,270 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Arr;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Pagination\LengthAwarePaginator;
 
 trait FilterService
 {
+    public $perPage = 15;
+    public $orderBy = 'id';
+    public $sortBy  = 'desc';
+    
     /**
-     * Apply filters to the query based on filter map configuration
+     * Get base query builder instance
      */
-    protected function applyFilters(Builder $query, array $filters, array $filterMap): Builder
+    protected function baseQuery(): Builder
     {
-        foreach ($filterMap as $filterKey => $mapping) {
-            if (!empty($filters[$filterKey])) {
-                $this->applyFilter($query, $mapping, $filters[$filterKey]);
-            }
-        }
-        return $query;
+        return $this->model->newQuery();
     }
 
     /**
-     * Apply a single filter based on mapping configuration
+     * Get all records with pagination, filters, search and ordering
      */
-    protected function applyFilter(Builder $query, array|string $mapping, $value): void
+    public function getAllFiltered($paginate = true)
     {
-        if (is_string($mapping)) {
-            $query->where($mapping, $value);
+        $query = $this->baseQuery();
+        
+        // Eager load relationships if specified
+        if (!empty($this->params['with'])) {
+            $query->with(Arr::wrap($this->params['with']));
+        }
+        
+        $this->applySearchFilter($query);
+        $this->applyFilterCondition($query);
+        $this->applyOrdering($query);
+        
+        if($paginate) {
+            return $query->paginate(request()->input('per_page', $this->perPage));
+        } else {
+            return $query->get();
+        }
+    }
+
+    /**
+     * Apply ordering to the query
+     */
+    protected function applyOrdering(Builder $query): void
+    {
+        $orderBy    = request()->input('order_by', $this->orderBy);
+        $sortBy     = strtolower(request()->input('sort_by', $this->sortBy));
+        
+        // Validate sort direction
+        $sortBy     = in_array($sortBy, ['asc', 'desc']) ? $sortBy : 'desc';
+        
+        // Handle nested ordering (relationship columns)
+        if (str_contains($orderBy, '.')) {
+            $this->applyNestedOrdering($query, $orderBy, $sortBy);
+        } else {
+            $query->orderBy($orderBy, $sortBy);
+        }
+    }
+
+    /**
+     * Apply ordering for nested relations
+     */
+    protected function applyNestedOrdering(Builder $query, string $field, string $direction): void
+    {
+        [$relation, $column] = explode('.', $field);
+        
+        $query->with([$relation => function ($q) use ($column, $direction) {
+            $q->orderBy($column, $direction);
+        }]);
+    }
+
+    /**
+     * Apply search filter if search parameter exists
+     */
+    protected function applySearchFilter(Builder $query): void
+    {
+        if (!request()->has('search') && empty(request('search')) && empty($this->searchColumns)) {
             return;
         }
 
-        // Handle relation filters
-        if (isset($mapping['relation'])) {
-            $query->whereHas($mapping['relation'], fn($q) => 
-                $this->applyWhereCondition($q, $mapping, $value)
-            );
+        $searchTerm = request('search');
+        
+        // Only proceed if we have a non-empty search term
+        if (empty($searchTerm)) {
             return;
         }
 
-        $this->applyWhereCondition($query, $mapping, $value);
-    }
-
-    /**
-     * Apply the actual where condition
-     */
-    private function applyWhereCondition(Builder $query, array $mapping, $value): void
-    {
-        $field = $mapping['field'] ?? $mapping[0] ?? null;
-        $operator = $mapping['operator'] ?? $mapping[1] ?? '=';
-
-        match ($operator) {
-            'like' => $query->where($field, 'like', "%{$value}%"),
-            'in' => $query->whereIn($field, (array)$value),
-            'search' => $this->applySearchFilter($query, $mapping, $value),
-            default => $query->where($field, $operator, $value)
-        };
-    }
-
-    /**
-     * Apply search across multiple fields
-     */
-    private function applySearchFilter(Builder $query, array $mapping, $value): void
-    {
-        $query->where(function ($q) use ($mapping, $value) {
-            foreach ($mapping['fields'] as $field) {
-                $q->orWhere($field, 'like', "%{$value}%");
+        $query->where(function ($q) use ($searchTerm) {
+            foreach ($this->searchColumns as $field) {
+                $this->applySearchCondition($q, $field, $searchTerm);
             }
         });
     }
 
     /**
-     * Apply date range filters
+     * Apply search condition for a single field with integrated field configuration
      */
-    protected function applyDateRange(Builder $query, ?string $dateFrom, ?string $dateTo, string $field = 'created_at'): void
+    protected function applySearchCondition(Builder $query, string $field, string $searchTerm): void
     {
-        if ($dateFrom && $this->isValidDate($dateFrom)) {
-            $query->whereDate($field, '>=', $dateFrom);
+        // Get field configuration from filterMap
+        $fieldConfig = [];
+        foreach ($this->filterMap as $key => $config) {
+            if (is_array($config)) {
+                $configField = $config['key'] ?? $config['field'] ?? $key;
+                if ($configField === $field) {
+                    $fieldConfig = $config;
+                    break;
+                }
+            }
         }
 
-        if ($dateTo && $this->isValidDate($dateTo)) {
-            $query->whereDate($field, '<=', $dateTo);
+        // Set up search parameters
+        $fieldName      = $fieldConfig['key'] ?? $fieldConfig['field'] ?? $field;
+        $condition      = $fieldConfig['condition'] ?? 'like';
+        $searchValue    = '%' . $searchTerm . '%';
+        $relation       = $fieldConfig['whereHas'] ?? null;
+
+        // Apply the appropriate condition based on field type
+        if (str_contains($fieldName, '.')) {
+            $this->applyNestedFilter($query,$fieldName,$condition,$searchValue,$relation,true // isOrWhere for search conditions
+            );
+        } else {
+            $query->orWhere($fieldName, $condition, $searchValue);
         }
     }
 
     /**
-     * Validate date string format (YYYY-MM-DD)
+     * Apply all field filters to the query
      */
-    protected function isValidDate(?string $date): bool
+    protected function applyFilterCondition(Builder $query): void
     {
-        if (empty($date)) {
-            return false;
+        $requestParams = request()->except(['search', 'order_by', 'sort_by']);
+        
+        foreach ($requestParams as $field => $value) {
+            // Skip empty values and undefined filters
+            if (empty($value) || !isset($this->filterMap[$field])) {
+                continue;
+            }
+            
+            $mapping    = $this->filterMap[$field];
+            $condition  = $mapping['condition'] ?? '=';
+            
+            // Handle array values differently
+            if (is_array($value) || $condition === 'in') {
+                $values = is_array($value) ? $value : [$value];
+                $this->applyArrayFilter($query, $field, $values);
+            } else {
+                $this->applyFieldFilter($query, $field, $value);
+            }
+        }
+    }
+
+    /**
+     * Special handler for array filters (IN conditions)
+     */
+    protected function applyArrayFilter(Builder $query, string $field, array $values): void
+    {
+        $mapping    = $this->filterMap[$field] ?? [];
+        $fieldName  = $mapping['key'] ?? $mapping['field'] ?? $field;
+        $type       = $mapping['type'] ?? 'string';
+        
+        // Process each value according to its type
+        $processedValues = array_map(function($value) use ($type) {
+            return match ($type) {
+                'int'   => (int)$value,
+                'float' => (float)$value,
+                'bool'  => (bool)$value,
+                'date'  => $this->parseDate($value),
+                default => (string)$value
+            };
+        }, $values);
+
+        // Handle nested relations
+        if (str_contains($fieldName, '.')) {
+            $this->applyNestedFilter($query, $fieldName, 'in', $processedValues, $mapping['whereHas'] ?? null);
+        } else {
+            $query->whereIn($fieldName, $processedValues);
+        }
+    }
+
+    /**
+     * Apply filter for a single field value (non-array)
+     */
+    protected function applyFieldFilter(Builder $query, string $field, $value): void
+    {
+        $mapping = $this->filterMap[$field] ?? [];
+        
+        if (empty($mapping)) {
+            return;
         }
 
-        $d = \DateTime::createFromFormat('Y-m-d', $date);
-        return $d && $d->format('Y-m-d') === $date;
+        $fieldName  = $mapping['key'] ?? $mapping['field'] ?? $field;
+        $type       = $mapping['type'] ?? 'string';
+        $condition  = $mapping['condition'] ?? '=';
+        
+        $processedValue = match ($type) {
+            'int'   => (int)$value,
+            'float' => (float)$value,
+            'bool'  => (bool)$value,
+            'date'  => $this->parseDate($value),
+            default => (string)$value
+        };
+
+        if (str_contains($fieldName, '.')) {
+            $this->applyNestedFilter($query, $fieldName, $condition, $processedValue, $mapping['whereHas'] ?? null);
+        } else {
+            $this->applyCondition($query, $fieldName, $condition, $processedValue, $type);
+        }
+    }
+
+     /**
+     * Apply filter on nested relations
+     */
+    protected function applyNestedFilter(Builder $query, string $field, string $condition, $value, ?string $relation = null, bool $isOrWhere = false): void
+    {
+        [$relationName, $column] = explode('.', $field);
+
+        $relation   = $relation ?? $relationName;
+        $method     = $isOrWhere ? 'orWhereHas' : 'whereHas';
+
+        $query->$method($relation, function ($q) use ($column, $condition, $value) {
+
+            $table              = $q->getModel()->getTable();
+            $qualifiedColumn    = "{$table}.{$column}";
+
+            $this->applyCondition($q, $qualifiedColumn, $condition, $value);
+        });
+    }
+
+    /**
+     * Apply final where condition
+     */
+    protected function applyCondition(Builder $query, string $field, string $condition, $value, string $type = 'string'): void
+    {
+        if ($type === 'date') {
+            $this->applyDateCondition($query, $field, $condition, $value);
+            return;
+        }
+
+        match ($condition) {
+            'in'        => $query->whereIn($field, Arr::wrap($value)),
+            'not_in'    => $query->whereNotIn($field, Arr::wrap($value)),
+            'like'      => $query->where($field, $condition, $value),
+            default     => $query->where($field, $condition, $value)
+        };
+    }
+
+    /**
+     * Apply date-specific conditions
+     */
+    protected function applyDateCondition(Builder $query, string $field, string $condition, $value): void
+    {
+        match ($condition) {
+            '>='    => $query->whereDate($field, '>=', $value),
+            '<='    => $query->whereDate($field, '<=', $value),
+            default => $query->whereDate($field, $condition, $value)
+        };
+    }
+
+    /**
+     * Parse date value to consistent format
+     */
+    protected function parseDate($value): string
+    {
+        return date('Y-m-d', is_numeric($value) ? $value : strtotime($value));
     }
 }

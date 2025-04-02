@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Traits;
 
 use Illuminate\Support\Arr;
 use Illuminate\Database\Eloquent\Builder;

@@ -3,7 +3,7 @@
 namespace App\Repositories;
 
 use App\Models\Post;
-use App\Services\FilterService;
+use App\Traits\FilterService;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Prettus\Repository\Eloquent\BaseRepository;
 use Prettus\Repository\Criteria\RequestCriteria;

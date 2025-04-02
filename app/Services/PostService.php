@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Post;
+use App\Traits\FilterService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
